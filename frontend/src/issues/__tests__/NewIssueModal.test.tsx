@@ -85,7 +85,7 @@ const TEAM: TeamContextValue = {
   statuses: [status(1, 'Todo'), status(2, 'In Progress')],
 }
 
-function Harness({ onClose }: { onClose: () => void }) {
+function Harness({ onClose, onShortcut }: { onClose: () => void; onShortcut: () => void }) {
   const [open, setOpen] = useState(true)
   const close = () => {
     setOpen(false)
@@ -94,8 +94,10 @@ function Harness({ onClose }: { onClose: () => void }) {
   useGlobalShortcuts({
     togglePalette: () => {},
     closeTop: close,
-    openNewIssue: () => {},
-    openShortcuts: () => {},
+    // The board's single-key shortcuts. Nothing the modal does should reach
+    // them while somebody is typing into it.
+    openNewIssue: onShortcut,
+    openShortcuts: onShortcut,
     suppressed: false,
   })
   return open ? <NewIssueModal onClose={close} /> : null
@@ -103,14 +105,15 @@ function Harness({ onClose }: { onClose: () => void }) {
 
 function renderModal() {
   const onClose = vi.fn()
+  const onShortcut = vi.fn()
   render(
     <QueryClientProvider client={new QueryClient()}>
       <TeamProvider value={TEAM}>
-        <Harness onClose={onClose} />
+        <Harness onClose={onClose} onShortcut={onShortcut} />
       </TeamProvider>
     </QueryClientProvider>,
   )
-  return { onClose, user: userEvent.setup() }
+  return { onClose, onShortcut, user: userEvent.setup() }
 }
 
 const optionsOf = (name: string) =>
@@ -173,6 +176,20 @@ describe('NewIssueModal', () => {
     expect(mutateAsync).not.toHaveBeenCalled()
   })
 
+  it('does not fire the board shortcuts for letters typed into it', async () => {
+    const { onShortcut, user } = renderModal()
+
+    // c opens a new issue and ? opens the cheatsheet -- from the board. In a
+    // title they are just letters, which is the whole point of the guard.
+    await user.type(screen.getByRole('textbox', { name: 'Issue title' }), 'Cannot log in? see /docs')
+    await user.type(screen.getByRole('textbox', { name: 'Description' }), 'c ? /')
+
+    expect(onShortcut).not.toHaveBeenCalled()
+    expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Issue title' }).value).toBe(
+      'Cannot log in? see /docs',
+    )
+  })
+
   it('sends nothing for the fields left untouched', async () => {
     const { user } = renderModal()
 
@@ -199,21 +216,23 @@ describe('NewIssueModal', () => {
 
   it('cannot be submitted until the title has something in it', async () => {
     const { user } = renderModal()
-    const submit = screen.getByRole<HTMLButtonElement>('button', { name: 'Create issue' })
-    expect(submit.disabled).toBe(true)
+    // Re-queried every time: holding the node across a re-render would assert
+    // against whatever React left behind.
+    const submit = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Create issue' })
+    expect(submit().disabled).toBe(true)
 
     await user.type(screen.getByRole('textbox', { name: 'Issue title' }), '   ')
-    expect(submit.disabled).toBe(true)
+    expect(submit().disabled).toBe(true)
 
     await user.type(screen.getByRole('textbox', { name: 'Issue title' }), 'Real')
-    expect(submit.disabled).toBe(false)
+    expect(submit().disabled).toBe(false)
   })
 
   it('says so and stays put while the create is in flight', () => {
     mutation.isPending = true
     renderModal()
 
-    const submit = screen.getByRole<HTMLButtonElement>('button', { name: 'Creating\u2026' })
+    const submit = screen.getByRole<HTMLButtonElement>('button', { name: 'Creating…' })
     expect(submit.disabled).toBe(true)
     expect(screen.queryByRole('button', { name: 'Create issue' })).toBeNull()
   })
@@ -226,7 +245,7 @@ describe('NewIssueModal', () => {
     await user.type(screen.getByRole('textbox', { name: 'Description' }), 'Steps to reproduce')
     await user.click(screen.getByRole('button', { name: 'Create issue' }))
 
-    expect(await screen.findByRole('alert')).toBeTruthy()
+    expect((await screen.findByRole('alert')).textContent).toMatch(/could not create the issue/i)
     // The point of staying open: a failed request must not be a way to lose
     // a description somebody just wrote.
     expect(onClose).not.toHaveBeenCalled()

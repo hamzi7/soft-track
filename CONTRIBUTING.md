@@ -108,9 +108,16 @@ per file with `// @vitest-environment jsdom` so the pure-logic suites keep
 running in node. Mock the generated API hooks at the module boundary with
 `vi.mock('@/api/generated/endpoints/...')` rather than a network layer, render
 the component inside the providers it reads from, and drive it with
-`@testing-library/user-event`. `frontend/src/issues/__tests__/NewIssueModal.test.tsx`
-and `frontend/src/keyboard/__tests__/CommandPalette.test.tsx` are the pattern
-to copy.
+`@testing-library/user-event`. Spread `importOriginal()` in the factory so the
+module's other exports survive, and keep a stub down to the props the test
+actually drives -- a mock factory is not typechecked against the module it
+replaces, so anything else it claims to be can drift without the build
+noticing. Where a key is handled by more than one layer, wire the harness to
+the board's real overlay stack: with a single boolean, "closed the dialog" and
+"closed the dialog and the panel behind it" look identical.
+`frontend/src/issues/__tests__/NewIssueModal.test.tsx` and
+`frontend/src/keyboard/__tests__/CommandPalette.test.tsx` are the pattern to
+copy.
 
 ## Opening the pull request
 

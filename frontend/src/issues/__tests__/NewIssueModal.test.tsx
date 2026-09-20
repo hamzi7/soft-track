@@ -21,13 +21,23 @@ import { NewIssueModal } from '@/issues/NewIssueModal'
 import { useGlobalShortcuts } from '@/keyboard/useGlobalShortcuts'
 import { TeamProvider, type TeamContextValue } from '@/team/TeamContext'
 
-const { mutateAsync } = vi.hoisted(() => ({ mutateAsync: vi.fn() }))
+// One object the hook hands back on every render, so a test can set
+// `mutation.isPending` before rendering and see what the form does with it.
+const { mutateAsync, mutation } = vi.hoisted(() => {
+  const mutateAsync = vi.fn()
+  return { mutateAsync, mutation: { mutateAsync, isPending: false } }
+})
 
 vi.mock('@/api/generated/endpoints/issues/issues', () => ({
-  useCreateIssueTeamsTeamIdIssuesPost: () => ({ mutateAsync, isPending: false }),
+  useCreateIssueTeamsTeamIdIssuesPost: () => mutation,
 }))
 
-vi.mock('@/markdown/lazy', () => ({
+// Spread the real module: it also exports `Markdown`, and replacing the whole
+// module wholesale would make that `undefined` the day the modal previews a
+// description -- failing as "Element type is invalid" rather than as anything
+// to do with this test.
+vi.mock('@/markdown/lazy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/markdown/lazy')>()),
   MarkdownEditor: ({
     value,
     onChange,
@@ -108,6 +118,7 @@ const optionsOf = (name: string) =>
 
 beforeEach(() => {
   mutateAsync.mockReset()
+  mutation.isPending = false
 })
 
 // The suite runs without globals, so Testing Library cannot register this itself.
@@ -160,6 +171,75 @@ describe('NewIssueModal', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(mutateAsync).not.toHaveBeenCalled()
+  })
+
+  it('sends nothing for the fields left untouched', async () => {
+    const { user } = renderModal()
+
+    await user.type(screen.getByRole('textbox', { name: 'Issue title' }), 'Just a title')
+    await user.click(screen.getByRole('button', { name: 'Create issue' }))
+
+    // Empty status and cycle are omitted rather than guessed, which is what
+    // lets the API put the issue in the team's leftmost column.
+    expect(mutateAsync).toHaveBeenCalledWith({
+      teamId: 7,
+      data: {
+        title: 'Just a title',
+        description: undefined,
+        project_id: undefined,
+        status_id: undefined,
+        priority: 'no_priority',
+        estimate: null,
+        cycle_id: undefined,
+        assignee_id: undefined,
+        label_ids: [],
+      },
+    })
+  })
+
+  it('cannot be submitted until the title has something in it', async () => {
+    const { user } = renderModal()
+    const submit = screen.getByRole<HTMLButtonElement>('button', { name: 'Create issue' })
+    expect(submit.disabled).toBe(true)
+
+    await user.type(screen.getByRole('textbox', { name: 'Issue title' }), '   ')
+    expect(submit.disabled).toBe(true)
+
+    await user.type(screen.getByRole('textbox', { name: 'Issue title' }), 'Real')
+    expect(submit.disabled).toBe(false)
+  })
+
+  it('says so and stays put while the create is in flight', () => {
+    mutation.isPending = true
+    renderModal()
+
+    const submit = screen.getByRole<HTMLButtonElement>('button', { name: 'Creating\u2026' })
+    expect(submit.disabled).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Create issue' })).toBeNull()
+  })
+
+  it('keeps everything typed when the create fails, and explains why', async () => {
+    mutateAsync.mockRejectedValue(new Error('500'))
+    const { onClose, user } = renderModal()
+
+    await user.type(screen.getByRole('textbox', { name: 'Issue title' }), 'Fix the login form')
+    await user.type(screen.getByRole('textbox', { name: 'Description' }), 'Steps to reproduce')
+    await user.click(screen.getByRole('button', { name: 'Create issue' }))
+
+    expect(await screen.findByRole('alert')).toBeTruthy()
+    // The point of staying open: a failed request must not be a way to lose
+    // a description somebody just wrote.
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog', { name: 'New issue' })).toBeTruthy()
+    expect(screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'Description' }).value).toBe(
+      'Steps to reproduce',
+    )
+
+    // And a retry goes through from the state that is still on screen.
+    mutateAsync.mockResolvedValue(undefined)
+    await user.click(screen.getByRole('button', { name: 'Create issue' }))
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
+    expect(mutateAsync).toHaveBeenCalledTimes(2)
   })
 
   it('closes on a scrim click, but not on a click inside the dialog', async () => {

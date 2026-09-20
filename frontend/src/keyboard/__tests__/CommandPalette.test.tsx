@@ -6,13 +6,18 @@
  * ⌘K is not the palette's own key: BoardPage's useGlobalShortcuts toggles it
  * from the window, and the palette is only mounted while open. The harness
  * mirrors that wiring, so "opens on ⌘K" is tested as the user experiences it.
+ *
+ * It uses the board's real overlay stack for the same reason. Escape is the
+ * one key two layers can both hear, and a harness holding a single boolean
+ * cannot tell "closed the palette" apart from "closed the palette and
+ * whatever was behind it".
  */
 import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { useState } from 'react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { IssueRead } from '@/api/generated/models'
+import { useOverlays } from '@/board/useOverlays'
 import { CommandPalette, type Command } from '@/keyboard/CommandPalette'
 import { useGlobalShortcuts } from '@/keyboard/useGlobalShortcuts'
 
@@ -51,22 +56,30 @@ const ISSUE: IssueRead = {
 }
 
 function Harness({ onOpenIssue }: { onOpenIssue: (issue: IssueRead) => void }) {
-  const [open, setOpen] = useState(false)
+  const overlays = useOverlays()
+  const open = overlays.isOpen('palette')
   useGlobalShortcuts({
-    togglePalette: () => setOpen((o) => !o),
-    closeTop: () => setOpen(false),
-    openNewIssue: () => {},
+    togglePalette: () => overlays.toggle('palette'),
+    closeTop: overlays.closeTop,
+    openNewIssue: () => overlays.open('newIssue'),
     openShortcuts: () => {},
     suppressed: open,
   })
-  return open ? (
-    <CommandPalette
-      onClose={() => setOpen(false)}
-      commands={COMMANDS}
-      issues={[ISSUE]}
-      onOpenIssue={onOpenIssue}
-    />
-  ) : null
+  return (
+    <>
+      {/* Stands in for the layers the board can have open underneath -- the
+          issue detail panel, the new-issue modal. Only its presence matters. */}
+      {overlays.isOpen('newIssue') && <div role="dialog" aria-label="Layer underneath" />}
+      {open && (
+        <CommandPalette
+          onClose={() => overlays.close('palette')}
+          commands={COMMANDS}
+          issues={[ISSUE]}
+          onOpenIssue={onOpenIssue}
+        />
+      )}
+    </>
+  )
 }
 
 function renderPalette() {
@@ -76,8 +89,11 @@ function renderPalette() {
 }
 
 const dialog = () => screen.queryByRole('dialog', { name: 'Command palette' })
-const labels = () => screen.getAllByRole('option').map((o) => o.firstElementChild?.textContent)
-const highlighted = () => screen.getByRole('option', { selected: true }).firstElementChild?.textContent
+// The first span in a row is its label; the second, when there is one, is the
+// hint. Reading the label alone keeps these assertions short.
+const labelOf = (option: Element) => option.firstElementChild?.textContent
+const labels = () => screen.getAllByRole('option').map(labelOf)
+const highlighted = () => labelOf(screen.getByRole('option', { selected: true }))
 
 beforeAll(() => {
   // jsdom does not lay anything out, and the palette scrolls the highlight into view.
@@ -145,6 +161,54 @@ describe('CommandPalette', () => {
     expect(dialog()).toBeNull()
     for (const fn of Object.values(run)) expect(fn).not.toHaveBeenCalled()
     expect(onOpenIssue).not.toHaveBeenCalled()
+  })
+
+  it('runs the result you click, and highlights the one under the pointer', async () => {
+    const { onOpenIssue, user } = renderPalette()
+    await user.keyboard('{Meta>}k{/Meta}')
+
+    await user.hover(screen.getByRole('option', { name: /Fix login/ }))
+    expect(highlighted()).toBe('Fix login')
+
+    await user.click(screen.getByRole('option', { name: /Toggle theme/ }))
+    expect(run.theme).toHaveBeenCalledTimes(1)
+    expect(onOpenIssue).not.toHaveBeenCalled()
+    expect(dialog()).toBeNull()
+  })
+
+  it('keeps the highlight on the list when the query shrinks it', async () => {
+    const { user } = renderPalette()
+    await user.keyboard('{Meta>}k{/Meta}{ArrowUp}')
+    expect(highlighted()).toBe('Fix login')
+
+    // The highlight is now past the end of what is left. Enter has to run the
+    // row the user can actually see, not fall off the list and do nothing.
+    await user.keyboard('theme')
+    expect(labels()).toEqual(['Toggle theme'])
+    expect(highlighted()).toBe('Toggle theme')
+
+    await user.keyboard('{Enter}')
+    expect(run.theme).toHaveBeenCalledTimes(1)
+    expect(dialog()).toBeNull()
+  })
+
+  it('closes only itself on Escape, leaving the layer underneath open', async () => {
+    const { user } = renderPalette()
+
+    await user.keyboard('c')
+    expect(screen.getByRole('dialog', { name: 'Layer underneath' })).toBeTruthy()
+    await user.keyboard('{Meta>}k{/Meta}')
+    expect(dialog()).toBeTruthy()
+
+    // One Escape, one layer: the palette stops the key reaching the window,
+    // so closeTop does not pop the thing behind it in the same keystroke.
+    await user.keyboard('{Escape}')
+    expect(dialog()).toBeNull()
+    expect(screen.getByRole('dialog', { name: 'Layer underneath' })).toBeTruthy()
+
+    // And with the palette gone, Escape reaches the window again.
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog', { name: 'Layer underneath' })).toBeNull()
   })
 
   it('moves the highlight with the arrow keys, wrapping at both ends', async () => {

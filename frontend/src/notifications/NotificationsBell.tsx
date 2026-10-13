@@ -80,7 +80,7 @@ export function NotificationsBell({
           button's name and once here; hiding either would defeat its point.
           aria-atomic so the whole sentence is read, not just the digits that
           changed. */}
-      <span aria-live="polite" aria-atomic="true" className="sr-only">
+      <span role="status" aria-live="polite" aria-atomic="true" className="sr-only">
         {unreadAnnouncement(unread)}
       </span>
 

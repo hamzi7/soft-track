@@ -37,6 +37,15 @@ function renderBell(unread: number) {
   return { container, queryClient }
 }
 
+/** A poll's answer arriving: React Query batches its observer notifications,
+ * so the setTimeout lets the bell see the new count before asserting. */
+async function poll(queryClient: QueryClient, unread: number, extra = {}) {
+  await act(async () => {
+    queryClient.setQueryData(key, { unread, ...extra })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+}
+
 /** The polite live region; throws if there is no such region. */
 function regionIn(container: HTMLElement): HTMLElement {
   const region = container.querySelector<HTMLElement>('[aria-live="polite"]')
@@ -87,5 +96,38 @@ describe('NotificationsBell', () => {
     // be a fresh, silent one.
     expect(regionIn(container)).toBe(before)
     expect(before.textContent).toBe('3 unread notifications')
+  })
+
+  it('is a status region, as the mockup draws it', () => {
+    renderBell(3)
+    expect(screen.getByRole('status').textContent).toBe('3 unread notifications')
+  })
+
+  it('says nothing when a poll brings the same count again', async () => {
+    const { container, queryClient } = renderBell(3)
+    const region = regionIn(container)
+    const changes: MutationRecord[] = []
+    const observer = new MutationObserver((records) => changes.push(...records))
+    observer.observe(region, { childList: true, characterData: true, subtree: true })
+
+    // The same number in a response that differs otherwise, so the bell does
+    // render again: identical data would be shared by React Query and never
+    // reach it, which would prove nothing.
+    await poll(queryClient, 3, { polled_at: Date.now() })
+    observer.disconnect()
+
+    // Text set again -- even to the same words -- is read out again.
+    expect(changes).toEqual([])
+    expect(region.textContent).toBe('3 unread notifications')
+  })
+
+  it('falls silent when the count drops to zero', async () => {
+    const { container, queryClient } = renderBell(3)
+    const region = regionIn(container)
+
+    await poll(queryClient, 0)
+
+    await waitFor(() => expect(region.textContent).toBe(''))
+    expect(regionIn(container)).toBe(region)
   })
 })

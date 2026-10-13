@@ -26,7 +26,12 @@ function renderBell(unread: number) {
 
   const { container } = render(
     <QueryClientProvider client={queryClient}>
-      <NotificationsBell open={false} onToggle={() => {}} onClose={() => {}} />
+      <NotificationsBell
+        open={false}
+        onToggle={() => {}}
+        onClose={() => {}}
+        onOpenTicket={() => {}}
+      />
     </QueryClientProvider>,
   )
   return { container, queryClient }
